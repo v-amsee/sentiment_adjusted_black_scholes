@@ -1,6 +1,7 @@
 import yfinance as yf
 import pandas as pd
 from datetime import date
+import csv
 
 
 def load_fnspid_news(
@@ -8,55 +9,59 @@ def load_fnspid_news(
     ticker: str,
     start_date: str,
     end_date: str,
-) -> pd.DataFrame:
+):
     """
-    Load historical news from FNSPID (Nasdaq subset),
-    filtered by ticker and date range.
-    Uses chunked reading to handle very large text fields.
+    Memory-safe loader for FNSPID.
+    Only loads minimal columns required for sentiment.
     """
-    import csv
-    csv.field_size_limit(10**7)  # increase field size limit safely
 
-    chunks = []
+    csv.field_size_limit(10**7)
+    records = []
+
+    usecols = ["Date", "Article_title", "Stock_symbol"]
 
     for chunk in pd.read_csv(
         path,
-        usecols=["Date", "Article_title", "Stock_symbol"],
         engine="python",
         encoding="utf-8",
+        usecols=usecols,          # ⭐ KEY FIX
         chunksize=100_000,
+        on_bad_lines="skip",
     ):
-        # Rename columns
-        chunk = chunk.rename(
-            columns={
-                "Date": "date",
-                "Article_title": "title",
-                "Stock_symbol": "symbol",
-            }
-        )
 
-        # Parse dates safely
-        chunk["date"] = pd.to_datetime(
-            chunk["date"], errors="coerce"
+        # Parse date safely
+        chunk["Date"] = pd.to_datetime(
+            chunk["Date"], errors="coerce"
         ).dt.date
-        chunk = chunk.dropna(subset=["date"])
 
-        # Filter ticker
-        chunk = chunk[chunk["symbol"] == ticker]
+        chunk = chunk.dropna(subset=["Date"])
 
-        # Filter date range
+        # Filter early (VERY important for memory)
         chunk = chunk[
-            (chunk["date"] >= pd.to_datetime(start_date).date()) &
-            (chunk["date"] <= pd.to_datetime(end_date).date())
+            (chunk["Stock_symbol"] == ticker) &
+            (chunk["Date"] >= pd.to_datetime(start_date).date()) &
+            (chunk["Date"] <= pd.to_datetime(end_date).date())
         ]
 
         if not chunk.empty:
-            chunks.append(chunk[["date", "title"]])
+            records.append(
+                chunk[["Date", "Article_title"]]
+            )
 
-    if not chunks:
+    if not records:
         return pd.DataFrame(columns=["date", "title"])
 
-    return pd.concat(chunks, ignore_index=True)
+    news_df = pd.concat(records, ignore_index=True)
+
+    news_df = news_df.rename(
+        columns={
+            "Date": "date",
+            "Article_title": "title",
+        }
+    )
+
+    return news_df
+
 
 
 def load_stock_data(ticker: str, start: str, end: str) -> pd.DataFrame:

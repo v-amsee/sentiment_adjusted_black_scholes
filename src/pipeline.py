@@ -1,21 +1,24 @@
-from data.load_data import load_stock_data,load_fnspid_news
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from data.load_data import load_stock_data, load_fnspid_news
+from data.load_option_data import load_nvda_option_chains
 from data.preprocess import compute_historical_volatility
 from sentiment.sentiment_score import compute_daily_sentiment
 from models.black_scholes import black_scholes_call, black_scholes_put
 from models.sentiment_adjusted_bs import adjust_volatility
 from config import (
     RISK_FREE_RATE,
-    TIME_TO_MATURITY_YEARS,
-    STRIKE_MULTIPLIER,
     SENTIMENT_ALPHA,
 )
 from evaluation.metrics import mean_absolute_error, root_mean_squared_error
 
 
 def run_pipeline():
-    # --------------------------------------------------
-    # 1. Load & preprocess stock data
-    # --------------------------------------------------
+
+    # ==================================================
+    # 1. LOAD STOCK + SENTIMENT DATA
+    # ==================================================
     stock_df = load_stock_data(
         ticker="NVDA",
         start="2020-01-01",
@@ -23,71 +26,29 @@ def run_pipeline():
     )
 
     stock_df = compute_historical_volatility(stock_df)
+    stock_df["date"] = stock_df["Date"].dt.date
 
-    stock_df["strike_price"] = stock_df["stock_price"] * STRIKE_MULTIPLIER
-    stock_df["time_to_maturity"] = TIME_TO_MATURITY_YEARS
-
-    # --------------------------------------------------
-    # 2. Baseline Black–Scholes pricing
-    # --------------------------------------------------
-    call_prices = []
-    put_prices = []
-
-    for row in stock_df.itertuples(index=False):
-        call_prices.append(
-            black_scholes_call(
-                S=row.stock_price,
-                K=row.strike_price,
-                T=row.time_to_maturity,
-                r=RISK_FREE_RATE,
-                sigma=row.historical_volatility,
-            )
-        )
-
-        put_prices.append(
-            black_scholes_put(
-                S=row.stock_price,
-                K=row.strike_price,
-                T=row.time_to_maturity,
-                r=RISK_FREE_RATE,
-                sigma=row.historical_volatility,
-            )
-        )
-
-    stock_df["bs_call_price"] = call_prices
-    stock_df["bs_put_price"] = put_prices
-
-    # --------------------------------------------------
-    # 3. Sentiment pipeline
-    # --------------------------------------------------
+    # Load news
     news_df = load_fnspid_news(
         path="data/raw/nasdaq_external_data.csv",
         ticker="NVDA",
         start_date="2020-01-01",
         end_date="2022-12-31",
-        )
+    )
 
     print("\nFNSPID news rows:", len(news_df))
-    print(news_df.head())
 
     daily_sentiment = compute_daily_sentiment(news_df)
-
-
-    stock_df["date"] = stock_df["Date"].dt.date
 
     stock_df = stock_df.merge(
         daily_sentiment,
         how="left",
-        left_on="date",
-        right_on="date",
+        on="date",
     )
 
-    # Treat missing sentiment as neutral
     stock_df["daily_sentiment"] = stock_df["daily_sentiment"].fillna(0.0)
 
-    # --------------------------------------------------
-    # 4. Sentiment-adjusted volatility
-    # --------------------------------------------------
+    # Sentiment-adjusted historical volatility (kept for research comparison)
     stock_df["adjusted_volatility"] = stock_df.apply(
         lambda row: adjust_volatility(
             base_volatility=row["historical_volatility"],
@@ -97,120 +58,165 @@ def run_pipeline():
         axis=1,
     )
 
-    # --------------------------------------------------
-    # 5. Sentiment-adjusted Black–Scholes pricing
-    # --------------------------------------------------
-    adj_call_prices = []
-    adj_put_prices = []
+    # ==================================================
+    # 2. LOAD REAL OPTION DATA (WITH IMPLIED VOL)
+    # ==================================================
+    print("\nLoading real option market data...")
 
-    for row in stock_df.itertuples(index=False):
-        adj_call_prices.append(
-            black_scholes_call(
-                S=row.stock_price,
-                K=row.strike_price,
+    options_df = load_nvda_option_chains(
+        path="data/raw/nvda_2020_2022.csv"
+    )
+
+    # Merge sentiment only (NOT historical vol anymore)
+    options_df = options_df.merge(
+        stock_df[["date", "daily_sentiment"]],
+        on="date",
+        how="left",
+    ).dropna()
+
+    print("Options ready for pricing:", len(options_df))
+
+    # Safety check
+    print("\nImplied Vol Summary:")
+    print(options_df["implied_vol"].describe())
+
+    # ==================================================
+    # 3. BASELINE — BLACK SCHOLES USING IMPLIED VOL
+    # ==================================================
+    bs_prices = []
+
+    for row in options_df.itertuples(index=False):
+
+        if row.type == "call":
+            price = black_scholes_call(
+                S=row.spot,
+                K=row.strike,
                 T=row.time_to_maturity,
                 r=RISK_FREE_RATE,
-                sigma=row.adjusted_volatility,
+                sigma=row.implied_vol,  # ⭐ KEY CHANGE
             )
-        )
-
-        adj_put_prices.append(
-            black_scholes_put(
-                S=row.stock_price,
-                K=row.strike_price,
+        else:
+            price = black_scholes_put(
+                S=row.spot,
+                K=row.strike,
                 T=row.time_to_maturity,
                 r=RISK_FREE_RATE,
-                sigma=row.adjusted_volatility,
+                sigma=row.implied_vol,  # ⭐ KEY CHANGE
             )
+
+        bs_prices.append(price)
+
+    options_df["bs_implied_price"] = bs_prices
+
+    # ==================================================
+    # 4. SENTIMENT-ADJUSTED IMPLIED VOL
+    # ==================================================
+    adj_prices = []
+
+    for row in options_df.itertuples(index=False):
+
+        adj_vol = adjust_volatility(
+            base_volatility=row.implied_vol,
+            sentiment=row.daily_sentiment,
+            alpha=SENTIMENT_ALPHA,
         )
 
-    stock_df["adj_call_price"] = adj_call_prices
-    stock_df["adj_put_price"] = adj_put_prices
+        if row.type == "call":
+            price = black_scholes_call(
+                S=row.spot,
+                K=row.strike,
+                T=row.time_to_maturity,
+                r=RISK_FREE_RATE,
+                sigma=adj_vol,
+            )
+        else:
+            price = black_scholes_put(
+                S=row.spot,
+                K=row.strike,
+                T=row.time_to_maturity,
+                r=RISK_FREE_RATE,
+                sigma=adj_vol,
+            )
 
-    # --------------------------------------------------
-    # 6. Sanity check output
-    # --------------------------------------------------
-    print(
-        stock_df[
-            [
-                "Date",
-                "stock_price",
-                "historical_volatility",
-                "daily_sentiment",
-                "adjusted_volatility",
-                "bs_call_price",
-                "adj_call_price",
-                "bs_put_price",
-                "adj_put_price",
-            ]
-        ].head(10)
-    )
+        adj_prices.append(price)
 
-    # --------------------------------------------------
-    # 7. Evaluation (baseline vs sentiment-adjusted)
-    # --------------------------------------------------
-    call_mae = mean_absolute_error(
-        stock_df["bs_call_price"],
-        stock_df["adj_call_price"],
-    )
+    options_df["sentiment_price"] = adj_prices
 
-    call_rmse = root_mean_squared_error(
-        stock_df["bs_call_price"],
-        stock_df["adj_call_price"],
-    )
+    # ==================================================
+    # 5. NUMERIC SAFETY (real datasets are messy)
+    # ==================================================
+    numeric_cols = [
+        "market_price",
+        "bs_implied_price",
+        "sentiment_price",
+    ]
 
-    put_mae = mean_absolute_error(
-        stock_df["bs_put_price"],
-        stock_df["adj_put_price"],
-    )
+    for col in numeric_cols:
+        options_df[col] = pd.to_numeric(options_df[col], errors="coerce")
 
-    put_rmse = root_mean_squared_error(
-        stock_df["bs_put_price"],
-        stock_df["adj_put_price"],
-    )
+    options_df = options_df.dropna(subset=numeric_cols)
 
-    print("\n=== Evaluation Results ===")
-    print(f"Call MAE  : {call_mae:.6f}")
-    print(f"Call RMSE : {call_rmse:.6f}")
-    print(f"Put MAE   : {put_mae:.6f}")
-    print(f"Put RMSE  : {put_rmse:.6f}")
+    # ==================================================
+    # 6. REAL MARKET EVALUATION
+    # ==================================================
+    print("\n=========== IMPLIED VOL VALIDATION ===========")
 
-# --------------------------------------------------
-# 8. Visualization: Baseline vs Sentiment-Adjusted Prices
-# --------------------------------------------------
-# This plot compares standard Black–Scholes call option prices
-# with sentiment-adjusted Black–Scholes prices over time.
-#
-# The goal is to visually demonstrate how incorporating
-# news-based sentiment into volatility affects option pricing,
-# while keeping the original Black–Scholes framework intact.
+    for opt_type in ["call", "put"]:
 
-    import matplotlib.pyplot as plt
+        subset = options_df[options_df["type"] == opt_type]
+
+        mae_bs = mean_absolute_error(
+            subset["market_price"],
+            subset["bs_implied_price"],
+        )
+
+        mae_adj = mean_absolute_error(
+            subset["market_price"],
+            subset["sentiment_price"],
+        )
+
+        rmse_bs = root_mean_squared_error(
+            subset["market_price"],
+            subset["bs_implied_price"],
+        )
+
+        rmse_adj = root_mean_squared_error(
+            subset["market_price"],
+            subset["sentiment_price"],
+        )
+
+        print(f"\n{opt_type.upper()} OPTIONS")
+        print(f"BS (Implied)  → MAE: {mae_bs:.4f}, RMSE: {rmse_bs:.4f}")
+        print(f"Sentiment IV  → MAE: {mae_adj:.4f}, RMSE: {rmse_adj:.4f}")
+
+    # ==================================================
+    # 7. OPTIONAL — VISUAL CHECK
+    # ==================================================
+    sample_calls = options_df[options_df["type"] == "call"].head(150)
 
     plt.figure()
 
-# Baseline Black–Scholes call prices
     plt.plot(
-        stock_df["Date"],
-        stock_df["bs_call_price"],
-        label="Baseline Black–Scholes",
+        sample_calls["market_price"].values,
+        label="Market Price",
     )
 
-# Sentiment-adjusted Black–Scholes call prices
     plt.plot(
-        stock_df["Date"],
-        stock_df["adj_call_price"],
-        label="Sentiment-Adjusted Black–Scholes",
-        )
+        sample_calls["bs_implied_price"].values,
+        label="BS Implied",
+    )
 
-    plt.title("Baseline vs Sentiment-Adjusted Call Prices (NVDA)")
-    plt.xlabel("Date")
-    plt.ylabel("Option Price")
+    plt.plot(
+        sample_calls["sentiment_price"].values,
+        label="Sentiment IV",
+    )
+
     plt.legend()
+    plt.title("Market vs Model Prices (Sample)")
     plt.tight_layout()
     plt.show()
 
-    return stock_df
+    return options_df
 
 
 if __name__ == "__main__":

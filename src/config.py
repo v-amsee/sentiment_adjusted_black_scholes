@@ -1,5 +1,5 @@
 # Risk-free rate (annualized)
-RISK_FREE_RATE = 0.05
+RISK_FREE_RATE = 0.02
 
 # Option settings
 TIME_TO_MATURITY_YEARS = 30 / 365  # 30-day option
