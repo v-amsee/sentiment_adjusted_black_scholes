@@ -2,7 +2,6 @@
 
 An interpretable extension of the Black–Scholes option pricing model that incorporates **financial news sentiment** into volatility estimation and validates pricing accuracy against **real option market data**.
 
----
 
 ## Overview
 
@@ -13,7 +12,6 @@ This project explores a simple, stable, and explainable way to integrate **news-
 
 The result is a fully modular, end-to-end Python pipeline that compares baseline Black–Scholes prices with sentiment-adjusted prices and evaluates them against **real traded option contracts**.
 
----
 
 ## Motivation
 
@@ -26,7 +24,6 @@ Rather than replacing Black–Scholes, this project **augments volatility** usin
 - Demonstrate controlled and interpretable sentiment-driven volatility adjustments  
 - Compare theoretical option pricing against **real market data**
 
----
 
 ## Methodology
 
@@ -64,7 +61,6 @@ Rather than replacing Black–Scholes, this project **augments volatility** usin
   - **Root Mean Squared Error (RMSE)**
 - Visual comparison of model vs market prices
 
----
 
 ## Results
 
@@ -82,7 +78,6 @@ Rather than replacing Black–Scholes, this project **augments volatility** usin
 - No numerical instability or unrealistic pricing behavior observed
 - Results reinforce that **implied volatility already embeds forward-looking sentiment**
 
----
 
 ## Datasets
 
@@ -98,7 +93,6 @@ Used for real market validation and implied volatility extraction.
 
 > Raw dataset files are **not included** in this repository and are used strictly for research and educational purposes.
 
----
 
 ## Limitations
 
@@ -107,7 +101,6 @@ Used for real market validation and implied volatility extraction.
 - Headline-level sentiment (not full-text NLP)  
 - Does not model volatility surfaces or Greeks
 
----
 
 ## Future Work
 
@@ -116,7 +109,6 @@ Used for real market validation and implied volatility extraction.
 - Transformer-based sentiment models (e.g., **FinBERT**)  
 - Multi-asset and cross-sector extensions
 
----
 
 ## Tech Stack
 
@@ -125,7 +117,6 @@ Used for real market validation and implied volatility extraction.
 - nltk (**VADER**)
 - matplotlib
 
----
 
 ## Author
 
